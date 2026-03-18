@@ -1,21 +1,19 @@
 /*
  * Elis Evleri - Koridor Sensör Sistemi
- * ESP32 + WS2811 Warm White LED Strip + PIR Sensör
+ * ESP32 + WS2811 24V Warm White LED Strip (10m, 400 piksel) + PIR
  *
  * LED: DORALED DRL-2811-WW-24
- *   - WS2811 IC, 24V, Warm White (gün ışığı)
- *   - 2835 chip, 120 LED/m, 3 LED per piksel
- *   - 24V harici güç kaynağı ile beslenir
+ *   - WS2811, 24V, Warm White (gün ışığı)
+ *   - 120 LED/m, 3 LED per piksel -> 40 piksel/m -> 10m = 400 piksel
  *
- * Test:    1x PIR (GPIO 27)
- * Üretim:  2-3x PIR + MQ5 + Alev (ileride eklenecek)
+ * Davranış:
+ *   - PIR hareket algılar -> fade-in ile tüm strip yanar
+ *   - 10sn hareket yoksa -> snake efekti ile bir uçtan sırayla söner
  *
  * Bağlantı:
- *   ESP32 GPIO 5  -> LED Strip Data (yeşil kablo)
- *   ESP32 GND     -> LED Strip GND  (beyaz kablo)
- *   24V PSU +     -> LED Strip +24V (kırmızı kablo)
- *   24V PSU GND   -> LED Strip GND  (beyaz kablo)
- *   ESP32 GND     -> 24V PSU GND    (ortak toprak!)
+ *   ESP32 GPIO 5  -> LED Data (yeşil)
+ *   ESP32 GND     -> LED GND (beyaz) + 24V PSU GND (ortak toprak)
+ *   24V PSU +     -> LED +24V (kırmızı)
  *   PIR OUT       -> ESP32 GPIO 27
  */
 
@@ -26,13 +24,12 @@
 
 CRGB leds[NUM_PIXELS];
 
-// PIR durumu
+// PIR
 bool motionDetected = false;
 unsigned long lastMotionTime = 0;
 
-// LED durumu
+// LED
 bool ledsActive = false;
-uint8_t currentBrightness = 0;
 
 // Sensör zamanlama
 unsigned long lastSensorRead = 0;
@@ -44,42 +41,30 @@ void setup() {
   Serial.println();
   Serial.println("====================================");
   Serial.println("Elis Evleri - Koridor Sensör Sistemi");
-  Serial.println("LED: WS2811 24V Warm White");
-  Serial.print("Piksel sayisi: ");
+  Serial.println("LED: WS2811 24V Warm White - 10m");
+  Serial.print("Piksel: ");
   Serial.println(NUM_PIXELS);
-
-  #ifdef MODE_PRODUCTION
-    Serial.println("Mod: URETIM");
-  #else
-    Serial.println("Mod: TEST (1xPIR)");
-  #endif
-
   Serial.println("====================================");
 
-  // PIR sensör pinleri
   pinMode(PIR_1_PIN, INPUT);
   #ifdef MODE_PRODUCTION
     pinMode(PIR_2_PIN, INPUT);
     pinMode(PIR_3_PIN, INPUT);
   #endif
 
-  // WS2811 LED strip başlat
-  // WS2811 warm white: RGB kanallarının hepsi aynı LED'i kontrol eder
-  // CRGB::White = tam parlaklık warm white
+  // WS2811 başlat
   FastLED.addLeds<WS2811, LED_PIN, RGB>(leds, NUM_PIXELS);
-  FastLED.setBrightness(0);
-
-  // Başlangıçta LED'leri kapat
+  FastLED.setBrightness(LED_BRIGHTNESS);
   fill_solid(leds, NUM_PIXELS, CRGB::Black);
   FastLED.show();
 
-  // Başlangıç testi - LED'lerin çalıştığını doğrula
+  // Başlangıç testi - snake koşu
   startupTest();
 
   // PIR kalibrasyonu
   Serial.println("PIR kalibrasyon (30sn)...");
   delay(30000);
-  Serial.println("Sistem hazir!");
+  Serial.println("Sistem hazir! Hareket bekleniyor...");
 }
 
 // ===================== ANA DÖNGÜ =====================
@@ -87,14 +72,41 @@ void setup() {
 void loop() {
   unsigned long now = millis();
 
-  // Sensör okuma
   if (now - lastSensorRead >= SENSOR_READ_INTERVAL) {
     lastSensorRead = now;
     readPIR();
   }
 
-  // LED kontrolü
-  updateMotionLEDs(now);
+  // Hareket varsa -> aç
+  if (motionDetected && !ledsActive) {
+    snakeFadeIn();
+    ledsActive = true;
+  }
+
+  // LED'ler açıksa ve timeout olduysa -> snake ile kapat
+  if (ledsActive && !motionDetected) {
+    // motionDetected zaten readPIR'da false yapılıyor timeout sonrası değil,
+    // burada timeout kontrolü yapalım
+  }
+
+  if (ledsActive && (now - lastMotionTime >= MOTION_TIMEOUT)) {
+    // Kapanmadan önce son bir PIR kontrolü
+    bool stillMotion = digitalRead(PIR_1_PIN) == HIGH;
+    #ifdef MODE_PRODUCTION
+      stillMotion = stillMotion || digitalRead(PIR_2_PIN) == HIGH || digitalRead(PIR_3_PIN) == HIGH;
+    #endif
+
+    if (stillMotion) {
+      // Hala hareket var, timeout'u sıfırla
+      lastMotionTime = now;
+    } else {
+      // Hareket yok, snake ile kapat
+      Serial.println("[LED] 10sn doldu - snake kapaniyor...");
+      snakeFadeOut();
+      ledsActive = false;
+      motionDetected = false;
+    }
+  }
 }
 
 // ===================== PIR OKUMA =====================
@@ -103,95 +115,106 @@ void readPIR() {
   bool pir1 = digitalRead(PIR_1_PIN) == HIGH;
   bool anyMotion = pir1;
 
-  if (pir1 && !motionDetected) {
-    Serial.println("[PIR-1] Hareket algilandi!");
-  }
-
   #ifdef MODE_PRODUCTION
     bool pir2 = digitalRead(PIR_2_PIN) == HIGH;
     bool pir3 = digitalRead(PIR_3_PIN) == HIGH;
     anyMotion = pir1 || pir2 || pir3;
-
-    if (pir2 && !motionDetected) Serial.println("[PIR-2] Hareket!");
-    if (pir3 && !motionDetected) Serial.println("[PIR-3] Hareket!");
   #endif
 
   if (anyMotion) {
+    if (!motionDetected) {
+      Serial.println("[PIR] Hareket algilandi!");
+    }
     motionDetected = true;
     lastMotionTime = millis();
   }
 }
 
-// ===================== LED KONTROL =====================
-
-void updateMotionLEDs(unsigned long now) {
-  if (motionDetected) {
-    // Hareket var -> LED'leri aç
-    if (!ledsActive) {
-      fadeIn();
-      ledsActive = true;
-    }
-
-    // Timeout: hareket yoksa kapat
-    if (now - lastMotionTime >= MOTION_TIMEOUT) {
-      Serial.println("[LED] Timeout - kapaniyor");
-      fadeOut();
-      ledsActive = false;
-      motionDetected = false;
-    }
-  }
-}
-
 // ===================== LED EFEKTLERİ =====================
 
-// Yumuşak açılma - gün ışığı sıcak beyaz
-void fadeIn() {
-  Serial.println("[LED] Aciliyor...");
-  // Warm white LED: tüm pikselleri beyaza ayarla, parlaklıkla kontrol et
-  fill_solid(leds, NUM_PIXELS, CRGB::White);
+// Snake fade-in: pikseller sırayla bir uçtan diğerine yanar
+// Her piksel yanarken arkasındakiler de parlaklaşır -> akıcı görünüm
+void snakeFadeIn() {
+  Serial.println("[LED] Snake fade-in basliyor...");
 
-  for (int b = 0; b <= LED_BRIGHTNESS; b += 3) {
-    FastLED.setBrightness(b);
-    FastLED.show();
-    delay(FADE_STEP_DELAY);
-  }
-  FastLED.setBrightness(LED_BRIGHTNESS);
-  FastLED.show();
-  currentBrightness = LED_BRIGHTNESS;
-}
-
-// Yumuşak kapanma
-void fadeOut() {
-  Serial.println("[LED] Kapaniyor...");
-  for (int b = LED_BRIGHTNESS; b >= 0; b -= 3) {
-    FastLED.setBrightness(b);
-    FastLED.show();
-    delay(FADE_STEP_DELAY);
-  }
-  fill_solid(leds, NUM_PIXELS, CRGB::Black);
-  FastLED.setBrightness(LED_BRIGHTNESS);
-  FastLED.show();
-  currentBrightness = 0;
-}
-
-// Başlangıç testi: sırayla pikselleri yak
-void startupTest() {
-  Serial.println("LED test basliyor...");
+  // Tüm pikselleri sırayla yak
   for (int i = 0; i < NUM_PIXELS; i++) {
     leds[i] = CRGB::White;
+    FastLED.show();
+    delay(FADE_IN_DELAY);
+  }
+
+  Serial.println("[LED] Tamamen acik.");
+}
+
+// Snake fade-out: pikseller bir uçtan diğerine sırayla söner
+// Yılan gibi karanlık dalga ilerler
+void snakeFadeOut() {
+  Serial.println("[LED] Snake fade-out basliyor...");
+
+  // Her piksel grubu kademeli sönsün (kuyruk efekti)
+  // Önce sönen piksellerin etrafında yumuşak geçiş
+  int tailLength = 15;  // Kuyruk uzunluğu - yumuşak geçiş için
+
+  for (int head = 0; head < NUM_PIXELS + tailLength; head++) {
+    // Kapanma sırasında hareket algılanırsa iptal et
+    if (digitalRead(PIR_1_PIN) == HIGH) {
+      Serial.println("[LED] Kapanma iptal - hareket var!");
+      // Tekrar tam yak
+      fill_solid(leds, NUM_PIXELS, CRGB::White);
+      FastLED.show();
+      motionDetected = true;
+      lastMotionTime = millis();
+      return;
+    }
+
+    // Kuyruk bölgesindeki pikselleri kademeli karart
+    for (int t = 0; t < tailLength; t++) {
+      int pos = head - t;
+      if (pos >= 0 && pos < NUM_PIXELS) {
+        // Kuyruğun başı karanlık, sonu parlak
+        uint8_t brightness = map(t, 0, tailLength - 1, 0, 255);
+        leds[pos] = CRGB(brightness, brightness, brightness);
+      }
+    }
+
+    // Kuyruktan geride kalanları tamamen kapat
+    int offPos = head - tailLength;
+    if (offPos >= 0 && offPos < NUM_PIXELS) {
+      leds[offPos] = CRGB::Black;
+    }
+
+    FastLED.show();
+    delay(SNAKE_OUT_DELAY);
+  }
+
+  // Hepsini kapat (garanti)
+  fill_solid(leds, NUM_PIXELS, CRGB::Black);
+  FastLED.show();
+  Serial.println("[LED] Tamamen kapali.");
+}
+
+// Başlangıç testi
+void startupTest() {
+  Serial.println("LED test...");
+  // Hızlı snake koşusu
+  for (int i = 0; i < NUM_PIXELS; i++) {
+    leds[i] = CRGB::White;
+    if (i > 0) leds[i - 1] = CRGB::Black;
     FastLED.setBrightness(LED_BRIGHTNESS / 3);
     FastLED.show();
-    delay(30);
-    leds[i] = CRGB::Black;
+    delay(2);
   }
-  // Hepsini bir anlığına yak
+  leds[NUM_PIXELS - 1] = CRGB::Black;
+
+  // Kısa flash
   fill_solid(leds, NUM_PIXELS, CRGB::White);
   FastLED.setBrightness(LED_BRIGHTNESS / 2);
   FastLED.show();
-  delay(500);
-  // Kapat
+  delay(300);
+
   fill_solid(leds, NUM_PIXELS, CRGB::Black);
-  FastLED.setBrightness(0);
+  FastLED.setBrightness(LED_BRIGHTNESS);
   FastLED.show();
   Serial.println("LED test tamam.");
 }
