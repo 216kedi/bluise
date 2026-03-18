@@ -20,7 +20,8 @@
 // 10m rulo = 400 adreslenebilir piksel
 // 24V harici güç kaynağı gerekli!
 
-#define LED_PIN             5
+#define LED_PIN             2       // Logic Shifter üzerinden WS2811'e
+#define RELAY_PIN           26      // 5V Röle kontrol pini
 #define NUM_PIXELS          400     // 10m x 40 piksel/m = 400 piksel
 #define LED_BRIGHTNESS      255     // Tam parlaklık
 
@@ -28,7 +29,7 @@
 #define PIR_1_PIN           27
 
 #ifdef MODE_PRODUCTION
-  #define PIR_2_PIN         26
+  #define PIR_2_PIN         14
   #define PIR_3_PIN         25
   #define PIR_COUNT         3
 #else

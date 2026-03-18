@@ -10,11 +10,14 @@
  *   - PIR hareket algılar -> fade-in ile tüm strip yanar
  *   - 10sn hareket yoksa -> snake efekti ile bir uçtan sırayla söner
  *
- * Bağlantı:
- *   ESP32 GPIO 5  -> LED Data (yeşil)
- *   ESP32 GND     -> LED GND (beyaz) + 24V PSU GND (ortak toprak)
- *   24V PSU +     -> LED +24V (kırmızı)
- *   PIR OUT       -> ESP32 GPIO 27
+ * Bağlantı (Fiziksel Şema):
+ *   ESP32 GPIO 2  -> Logic Shifter LV1 -> HV1 -> WS2811 Data
+ *   ESP32 GPIO 26 -> 5V Röle IN -> LED 24V güç hattı
+ *   ESP32 GPIO 27 -> PIR 1 (Asansör)
+ *   ESP32 3.3V    -> Logic Shifter LV
+ *   24V PSU       -> LM2596 Buck -> 5V (ESP32 VIN + Röle VCC)
+ *   24V PSU       -> Röle COM -> WS2811 +24V
+ *   GND           -> Ortak toprak (ESP32 + PSU + LED + PIR)
  */
 
 #include <FastLED.h>
@@ -51,6 +54,10 @@ void setup() {
     pinMode(PIR_2_PIN, INPUT);
     pinMode(PIR_3_PIN, INPUT);
   #endif
+
+  // Röle başlat (LOW = kapalı, HIGH = açık)
+  pinMode(RELAY_PIN, OUTPUT);
+  digitalWrite(RELAY_PIN, LOW);
 
   // WS2811 başlat
   FastLED.addLeds<WS2811, LED_PIN, RGB>(leds, NUM_PIXELS);
@@ -137,6 +144,10 @@ void readPIR() {
 void snakeFadeIn() {
   Serial.println("[LED] Snake fade-in basliyor...");
 
+  // Röle ile 24V gücü aç
+  digitalWrite(RELAY_PIN, HIGH);
+  delay(50);  // Röle stabilize olsun
+
   // Tüm pikselleri sırayla yak
   for (int i = 0; i < NUM_PIXELS; i++) {
     leds[i] = CRGB::White;
@@ -191,12 +202,17 @@ void snakeFadeOut() {
   // Hepsini kapat (garanti)
   fill_solid(leds, NUM_PIXELS, CRGB::Black);
   FastLED.show();
+
+  // Röle ile 24V gücü kapat (enerji tasarrufu)
+  digitalWrite(RELAY_PIN, LOW);
   Serial.println("[LED] Tamamen kapali.");
 }
 
 // Başlangıç testi
 void startupTest() {
   Serial.println("LED test...");
+  digitalWrite(RELAY_PIN, HIGH);
+  delay(50);
   // Hızlı snake koşusu
   for (int i = 0; i < NUM_PIXELS; i++) {
     leds[i] = CRGB::White;
@@ -216,5 +232,6 @@ void startupTest() {
   fill_solid(leds, NUM_PIXELS, CRGB::Black);
   FastLED.setBrightness(LED_BRIGHTNESS);
   FastLED.show();
+  digitalWrite(RELAY_PIN, LOW);
   Serial.println("LED test tamam.");
 }
